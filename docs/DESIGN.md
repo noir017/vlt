@@ -26,7 +26,7 @@ vlt lock
 约定：
 
 - `<name>` 是条目名，默认落在 folder `agent` 下，命名 `用途/系统`（如 `svc/gitea`、`api/newapi`）。
-- `get` 默认只打印元信息，机密字段打码。`--field` 输出单值；机密字段在 stdout 为 TTY 时拒绝执行，需 `--reveal` 强制。
+- `get` 默认只打印元信息，机密字段打码。`--field` 输出单值；机密字段在 stdout 为 TTY 时拒绝执行，需 `--stdout` 或 `--reveal` 显式要求。
 - `--json` 输出结构化结果；不含机密，除非同时给 `--stdout`。
 - `set` 按名字 upsert：存在则更新给定字段，不存在则新建；未给的字段保持原值。
 - `run` 把值注入子进程环境变量，不落 argv，透传 stdin/stdout/stderr 与退出码。
@@ -88,7 +88,7 @@ internal/store/        名称索引、upsert、搜索
 internal/totp/         RFC 6238
 ```
 
-只依赖标准库和 `golang.org/x/crypto/pbkdf2`（Argon2 KDF 不实现，遇到直接报错说明）。
+只依赖标准库和 `golang.org/x/crypto`（PBKDF2 与 Argon2id）。
 
 ## 发布
 
