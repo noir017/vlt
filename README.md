@@ -59,11 +59,9 @@ vlt mv svc/gitea svc/gitea-old
 vlt rm svc/gitea-old svc/retired --yes                    # several at once, to the trash
 vlt rm --id 5f0c... --yes
 
-# trash
+# trash (vlt never deletes permanently)
 vlt trash                       # list what is in it
 vlt restore svc/gitea-old       # put it back
-vlt trash --empty --yes         # purge everything for good
-vlt rm svc/retired --permanent --yes
 
 # inject into a child process environment (not argv)
 vlt run --env TOKEN=api/newapi.password -- curl -H "Authorization: Bearer $TOKEN" ...

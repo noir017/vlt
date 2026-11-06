@@ -95,9 +95,9 @@ func usage(w io.Writer) {
   vlt ls [query] [--folder F] [--json]
   vlt find <query> [--json]
   vlt mv <name> <new> [--folder F] [--json]
-  vlt rm <name>... [--permanent] [--yes]     (default: move to trash)
+  vlt rm <name>... [--yes]     (always moves to the trash)
   vlt restore <name>... | --id <id>
-  vlt trash [--json] [--empty --yes]
+  vlt trash [--json]
   vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
   vlt doctor
   vlt lock
@@ -797,7 +797,6 @@ func cmdRemove(args []string) int {
 	fs := newFlags("rm")
 	cfgPath := configFlag(fs)
 	yes := fs.Bool("yes", false, "do not ask")
-	permanent := fs.Bool("permanent", false, "delete permanently instead of moving to the trash")
 	id := fs.String("id", "", "delete by id instead of name")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -841,13 +840,6 @@ func cmdRemove(args []string) int {
 		}
 	}
 	for _, item := range targets {
-		if *permanent {
-			if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
-				return a.fail(err)
-			}
-			fmt.Printf("deleted %s permanently\n", item.Name)
-			continue
-		}
 		if item.Deleted {
 			fmt.Printf("already in the trash: %s\n", item.Name)
 			continue
@@ -860,32 +852,13 @@ func cmdRemove(args []string) int {
 	return exitOK
 }
 
-// lookupForDelete prefers live items; a trashed one is only a valid target for
-// a permanent delete.
+// lookupForDelete resolves a live item; anything already in the trash is not a
+// valid target.
 func (a *app) lookupForDelete(id, name string) (*store.Item, error) {
-	get := func(trashed bool) (*store.Item, error) {
-		if id != "" {
-			if trashed {
-				return a.vault.FindTrashedByID(id)
-			}
-			return a.vault.FindByID(id)
-		}
-		if trashed {
-			return a.vault.FindTrashed(name)
-		}
-		return a.vault.Find(name)
+	if id != "" {
+		return a.vault.FindByID(id)
 	}
-	item, err := get(false)
-	if err == nil {
-		return item, nil
-	}
-	if !errors.Is(err, store.ErrNotFound) {
-		return nil, err
-	}
-	if trashed, terr := get(true); terr == nil {
-		return trashed, nil
-	}
-	return nil, err
+	return a.vault.Find(name)
 }
 
 // ---------------------------------------------------------------- mv
@@ -1013,8 +986,6 @@ func cmdRestore(args []string) int {
 func cmdTrash(args []string) int {
 	fs := newFlags("trash")
 	cfgPath := configFlag(fs)
-	empty := fs.Bool("empty", false, "permanently delete everything in the trash")
-	yes := fs.Bool("yes", false, "do not ask")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return usageError(err)
@@ -1024,24 +995,6 @@ func cmdTrash(args []string) int {
 		return failPlain(err)
 	}
 	items := a.vault.Trashed()
-	if *empty {
-		if len(items) == 0 {
-			fmt.Println("trash is empty")
-			return exitOK
-		}
-		if !*yes {
-			if !isTTY(os.Stdin) || !confirmed("permanently delete %d item(s)?", len(items)) {
-				return usageError(errors.New("refusing to empty the trash without --yes"))
-			}
-		}
-		for _, item := range items {
-			if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
-				return a.fail(err)
-			}
-		}
-		fmt.Printf("emptied trash (%d items)\n", len(items))
-		return exitOK
-	}
 	if *asJSON {
 		out := make([]map[string]any, 0, len(items))
 		for _, it := range items {

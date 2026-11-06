@@ -117,11 +117,6 @@ func (c *Client) RestoreCipher(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPut, "/api/ciphers/"+id+"/restore", nil, nil, true)
 }
 
-// DeleteCipher permanently removes an item.
-func (c *Client) DeleteCipher(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/api/ciphers/"+id, nil, nil, true)
-}
-
 // CreateFolder creates a folder from an already-encrypted name.
 func (c *Client) CreateFolder(ctx context.Context, encName string) (string, error) {
 	var out struct {
