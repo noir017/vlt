@@ -29,7 +29,7 @@ vlt lock
 - `get` 默认只打印元信息，机密字段打码。`--field` 输出单值；机密字段在 stdout 为 TTY 时拒绝执行，需 `--stdout` 或 `--reveal` 显式要求。
 - `--json` 输出结构化结果；不含机密，除非同时给 `--stdout`。
 - `set` 按名字 upsert：存在则更新给定字段，不存在则新建；未给的字段保持原值。
-- `run` 把值注入子进程环境变量，不落 argv，透传 stdin/stdout/stderr 与退出码。
+- `run` 把值注入子进程环境变量，不落 argv，透传 stdin/stdout/stderr 与退出码；`<name>` 不带字段时默认取 password。
 - 退出码：0 成功，1 通用错误，2 用法错误，3 未找到，4 认证失败，5 网络/服务错误。
 
 ## 泄漏面与对策

@@ -45,7 +45,8 @@ printf '%s' "$NEW_PASSWORD" | vlt set svc/gitea --username root \
 # read metadata, then one field
 vlt get svc/gitea
 vlt get svc/gitea --field password --stdout | sshpass -e ...
-vlt get svc/gitea --field totp --stdout
+vlt get svc/gitea --field totp --stdout          # current 6-digit code
+vlt get svc/gitea --field totp-secret --stdout   # the raw seed
 
 # search
 vlt ls gitea
@@ -53,6 +54,7 @@ vlt find example.com --json
 
 # inject into a child process environment (not argv)
 vlt run --env TOKEN=api/newapi.password -- curl -H "Authorization: Bearer $TOKEN" ...
+vlt run --env TOKEN=api/newapi -- ...            # field defaults to password
 
 # housekeeping
 vlt rm svc/gitea --yes

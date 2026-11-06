@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -100,6 +101,12 @@ func parse(s string) map[string]string {
 }
 
 func checkFile(path string) error {
+	// Windows reports synthetic mode bits, so the POSIX permission check would
+	// reject every file there. The account ACL is the real control.
+	if runtime.GOOS == "windows" {
+		_, err := os.Stat(path)
+		return err
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("cannot open %s: %w", path, err)

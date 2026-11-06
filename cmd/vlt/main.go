@@ -82,7 +82,7 @@ func run(args []string) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `vlt - secrets for agents, via Vaultwarden
 
-  vlt get <name> [--field password|username|totp|uri|notes|name] [--stdout] [--reveal] [--json]
+  vlt get <name> [--field password|username|totp|totp-secret|uri|notes|name] [--stdout] [--reveal] [--json]
   vlt set <name> [--username U] [--uri U]...
                  [--password-stdin | --password-file F | --generate [--length N]]
                  [--note-stdin | --note-file F] [--type login|note] [--folder F]
@@ -102,11 +102,12 @@ stdout is a terminal.
 // ---------------------------------------------------------------- plumbing
 
 type app struct {
-	cfg   *secret.Config
-	cl    *vw.Client
-	vault *store.Vault
-	red   *secret.Redactor
-	cache string
+	cfg        *secret.Config
+	cl         *vw.Client
+	vault      *store.Vault
+	red        *secret.Redactor
+	cache      string
+	freshLogin bool
 }
 
 func openApp(ctx context.Context, path string) (*app, error) {
@@ -124,6 +125,7 @@ func openApp(ctx context.Context, path string) (*app, error) {
 
 	cache := secret.CachePath()
 	var sync *vw.Sync
+	freshLogin := false
 
 	if token, ok := secret.LoadCache(cache, cfg.Server, cfg.Email); ok {
 		cl.Token = token
@@ -142,6 +144,7 @@ func openApp(ctx context.Context, path string) (*app, error) {
 	}
 
 	if sync == nil {
+		freshLogin = true
 		ttl, err := cl.Login(ctx, cfg.Password)
 		if err != nil {
 			return nil, err
@@ -163,7 +166,7 @@ func openApp(ctx context.Context, path string) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{cfg: cfg, cl: cl, vault: vault, red: red, cache: cache}, nil
+	return &app{cfg: cfg, cl: cl, vault: vault, red: red, cache: cache, freshLogin: freshLogin}, nil
 }
 
 func (a *app) fail(err error) int {
@@ -241,7 +244,7 @@ func cmdGet(args []string) int {
 	if err != nil {
 		return usageError(err)
 	}
-	if len(pos) != 1 {
+	if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" {
 		return usageError(errors.New("get needs exactly one item name"))
 	}
 	name := pos[0]
@@ -350,7 +353,7 @@ func cmdSet(args []string) int {
 	if perr != nil {
 		return usageError(perr)
 	}
-	if len(pos) != 1 {
+	if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" {
 		return usageError(errors.New("set needs exactly one item name"))
 	}
 	name := pos[0]
@@ -717,7 +720,7 @@ func cmdRemove(args []string) int {
 	if err != nil {
 		return usageError(err)
 	}
-	if len(pos) != 1 {
+	if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" {
 		return usageError(errors.New("rm needs exactly one item name"))
 	}
 	name := pos[0]
@@ -795,7 +798,14 @@ func cmdRun(args []string) int {
 
 func splitRef(ref string) (name, field string, ok bool) {
 	i := strings.LastIndex(ref, ".")
-	if i <= 0 || i == len(ref)-1 {
+	if i < 0 {
+		// "name" is shorthand for "name.password".
+		if ref == "" {
+			return "", "", false
+		}
+		return ref, "password", true
+	}
+	if i == 0 || i == len(ref)-1 {
 		return "", "", false
 	}
 	return ref[:i], ref[i+1:], true
@@ -821,10 +831,11 @@ func cmdDoctor(args []string) int {
 		fmt.Printf("server: %s (%s %s)\n", a.cfg.Server, serverCfg.Server.Name, serverCfg.Version)
 	}
 	fmt.Printf("auth:   %s (user %s)\n", a.cfg.Email, a.vault.UID)
-	if _, ok := secret.LoadCache(a.cache, a.cfg.Server, a.cfg.Email); ok {
-		fmt.Printf("cache:  %s (valid)\n", a.cache)
-	} else {
-		fmt.Printf("cache:  none\n")
+	switch {
+	case a.freshLogin:
+		fmt.Printf("cache:  none (logged in just now)\n")
+	default:
+		fmt.Printf("cache:  %s (hit)\n", a.cache)
 	}
 	fmt.Printf("items:  %d, folders: %d\n", len(a.vault.Items), len(a.vault.Folders))
 	return exitOK
@@ -863,6 +874,11 @@ func itemField(it *store.Item, f string) (string, error) {
 			return "", nil
 		}
 		return it.URIs[0], nil
+	case "totp-secret":
+		if it.TOTP == "" {
+			return "", errors.New("item has no TOTP secret")
+		}
+		return it.TOTP, nil
 	case "totp", "otp":
 		if it.TOTP == "" {
 			return "", errors.New("item has no TOTP secret")
@@ -873,13 +889,13 @@ func itemField(it *store.Item, f string) (string, error) {
 		}
 		return cfg.Code(time.Now()), nil
 	default:
-		return "", fmt.Errorf("unknown field %q; use name, username, password, totp, uri or notes", f)
+		return "", fmt.Errorf("unknown field %q; use name, username, password, totp, totp-secret, uri or notes", f)
 	}
 }
 
 func isSecretField(f string) bool {
 	switch f {
-	case "password", "totp", "otp", "notes", "note":
+	case "password", "totp", "otp", "totp-secret", "notes", "note":
 		return true
 	}
 	return false
