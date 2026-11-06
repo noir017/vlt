@@ -62,6 +62,10 @@ func run(args []string) int {
 		return cmdRemove(rest)
 	case "mv", "rename":
 		return cmdMove(rest)
+	case "restore", "undelete":
+		return cmdRestore(rest)
+	case "trash":
+		return cmdTrash(rest)
 	case "run":
 		return cmdRun(rest)
 	case "doctor":
@@ -91,7 +95,9 @@ func usage(w io.Writer) {
   vlt ls [query] [--folder F] [--json]
   vlt find <query> [--json]
   vlt mv <name> <new> [--folder F] [--json]
-  vlt rm <name>... [--yes]
+  vlt rm <name>... [--permanent] [--yes]     (default: move to trash)
+  vlt restore <name>... | --id <id>
+  vlt trash [--json] [--empty --yes]
   vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
   vlt doctor
   vlt lock
@@ -240,6 +246,7 @@ func cmdGet(args []string) int {
 	fs := newFlags("get")
 	cfgPath := configFlag(fs)
 	id := fs.String("id", "", "look the item up by id instead of name")
+	trash := fs.Bool("trash", false, "look in the trash")
 	field := fs.String("field", "", "field to print: name, username, password, totp, uri, notes")
 	toStdout := fs.Bool("stdout", false, "print the value (defaults to password)")
 	reveal := fs.Bool("reveal", false, "allow secret output to a terminal")
@@ -265,11 +272,24 @@ func cmdGet(args []string) int {
 	}
 	var item *store.Item
 	if *id != "" {
-		item, err = a.vault.FindByID(*id)
+		if *trash {
+			item, err = a.vault.FindTrashedByID(*id)
+		} else {
+			item, err = a.vault.FindByID(*id)
+		}
 	} else {
-		item, err = a.vault.Find(name)
+		if *trash {
+			item, err = a.vault.FindTrashed(name)
+		} else {
+			item, err = a.vault.Find(name)
+		}
 	}
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) && !*trash {
+			if _, terr := a.vault.FindTrashed(name); terr == nil {
+				return a.fail(fmt.Errorf("%q is in the trash; use vlt restore %s, or vlt get --trash %s", name, name, name))
+			}
+		}
 		return a.fail(err)
 	}
 
@@ -467,6 +487,11 @@ func cmdSet(args []string) int {
 	existing, findErr := a.vault.Find(name)
 	if findErr != nil && !errors.Is(findErr, store.ErrNotFound) {
 		return a.fail(findErr)
+	}
+	if errors.Is(findErr, store.ErrNotFound) {
+		if _, terr := a.vault.FindTrashed(name); terr == nil {
+			fmt.Fprintf(os.Stderr, "vlt: warning: %q is in the trash; the new item is created alongside it (vlt restore %s)\n", name, name)
+		}
 	}
 	kind := "login"
 	if typ.set {
@@ -697,6 +722,7 @@ func listImpl(args []string, requireQuery bool) int {
 	cfgPath := configFlag(fs)
 	asJSON := fs.Bool("json", false, "JSON output")
 	folder := fs.String("folder", "", "only items in this folder")
+	trash := fs.Bool("trash", false, "list the trash instead")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return usageError(err)
@@ -710,7 +736,16 @@ func listImpl(args []string, requireQuery bool) int {
 	if err != nil {
 		return failPlain(err)
 	}
-	items := a.vault.Search(query)
+	var items []*store.Item
+	if *trash {
+		for _, it := range a.vault.Trashed() {
+			if matches(it, query) {
+				items = append(items, it)
+			}
+		}
+	} else {
+		items = a.vault.Search(query)
+	}
 	if *folder != "" {
 		var filtered []*store.Item
 		for _, it := range items {
@@ -731,6 +766,7 @@ func listImpl(args []string, requireQuery bool) int {
 				"folder":   it.Folder,
 				"updated":  it.Updated,
 				"type":     it.Type,
+				"deleted":  it.Deleted,
 			})
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -761,6 +797,7 @@ func cmdRemove(args []string) int {
 	fs := newFlags("rm")
 	cfgPath := configFlag(fs)
 	yes := fs.Bool("yes", false, "do not ask")
+	permanent := fs.Bool("permanent", false, "delete permanently instead of moving to the trash")
 	id := fs.String("id", "", "delete by id instead of name")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -784,14 +821,14 @@ func cmdRemove(args []string) int {
 	}
 	var targets []*store.Item
 	if *id != "" {
-		item, err := a.vault.FindByID(*id)
+		item, err := a.lookupForDelete(*id, "")
 		if err != nil {
 			return a.fail(err)
 		}
 		targets = append(targets, item)
 	} else {
 		for _, name := range pos {
-			item, err := a.vault.Find(name)
+			item, err := a.lookupForDelete("", name)
 			if err != nil {
 				return a.fail(err)
 			}
@@ -804,12 +841,51 @@ func cmdRemove(args []string) int {
 		}
 	}
 	for _, item := range targets {
-		if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
+		if *permanent {
+			if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
+				return a.fail(err)
+			}
+			fmt.Printf("deleted %s permanently\n", item.Name)
+			continue
+		}
+		if item.Deleted {
+			fmt.Printf("already in the trash: %s\n", item.Name)
+			continue
+		}
+		if err := a.cl.TrashCipher(context.Background(), item.ID); err != nil {
 			return a.fail(err)
 		}
-		fmt.Printf("deleted %s\n", item.Name)
+		fmt.Printf("trashed %s\n", item.Name)
 	}
 	return exitOK
+}
+
+// lookupForDelete prefers live items; a trashed one is only a valid target for
+// a permanent delete.
+func (a *app) lookupForDelete(id, name string) (*store.Item, error) {
+	get := func(trashed bool) (*store.Item, error) {
+		if id != "" {
+			if trashed {
+				return a.vault.FindTrashedByID(id)
+			}
+			return a.vault.FindByID(id)
+		}
+		if trashed {
+			return a.vault.FindTrashed(name)
+		}
+		return a.vault.Find(name)
+	}
+	item, err := get(false)
+	if err == nil {
+		return item, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	if trashed, terr := get(true); terr == nil {
+		return trashed, nil
+	}
+	return nil, err
 }
 
 // ---------------------------------------------------------------- mv
@@ -884,6 +960,125 @@ func cmdMove(args []string) int {
 		fmt.Printf("renamed %s -> %s\n", item.Name, newName)
 	}
 	return exitOK
+}
+
+// ---------------------------------------------------------------- restore / trash
+
+func cmdRestore(args []string) int {
+	fs := newFlags("restore")
+	cfgPath := configFlag(fs)
+	id := fs.String("id", "", "restore by id")
+	if err := fs.Parse(args); err != nil {
+		return usageError(err)
+	}
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return usageError(err)
+	}
+	if *id != "" && len(pos) != 0 {
+		return usageError(errors.New("use either names or --id, not both"))
+	}
+	if *id == "" && len(pos) == 0 {
+		return usageError(errors.New("restore needs at least one item name, or --id"))
+	}
+	a, err := openApp(context.Background(), *cfgPath)
+	if err != nil {
+		return failPlain(err)
+	}
+	var targets []*store.Item
+	if *id != "" {
+		item, err := a.vault.FindTrashedByID(*id)
+		if err != nil {
+			return a.fail(err)
+		}
+		targets = append(targets, item)
+	} else {
+		for _, name := range pos {
+			item, err := a.vault.FindTrashed(name)
+			if err != nil {
+				return a.fail(err)
+			}
+			targets = append(targets, item)
+		}
+	}
+	for _, item := range targets {
+		if err := a.cl.RestoreCipher(context.Background(), item.ID); err != nil {
+			return a.fail(err)
+		}
+		fmt.Printf("restored %s\n", item.Name)
+	}
+	return exitOK
+}
+
+func cmdTrash(args []string) int {
+	fs := newFlags("trash")
+	cfgPath := configFlag(fs)
+	empty := fs.Bool("empty", false, "permanently delete everything in the trash")
+	yes := fs.Bool("yes", false, "do not ask")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return usageError(err)
+	}
+	a, err := openApp(context.Background(), *cfgPath)
+	if err != nil {
+		return failPlain(err)
+	}
+	items := a.vault.Trashed()
+	if *empty {
+		if len(items) == 0 {
+			fmt.Println("trash is empty")
+			return exitOK
+		}
+		if !*yes {
+			if !isTTY(os.Stdin) || !confirmed("permanently delete %d item(s)?", len(items)) {
+				return usageError(errors.New("refusing to empty the trash without --yes"))
+			}
+		}
+		for _, item := range items {
+			if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
+				return a.fail(err)
+			}
+		}
+		fmt.Printf("emptied trash (%d items)\n", len(items))
+		return exitOK
+	}
+	if *asJSON {
+		out := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			out = append(out, map[string]any{
+				"id":        it.ID,
+				"name":      it.Name,
+				"username":  it.Username,
+				"folder":    it.Folder,
+				"deletedAt": it.DeletedAt,
+			})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return exitOK
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tUSERNAME\tDELETED")
+	for _, it := range items {
+		at := ""
+		if !it.DeletedAt.IsZero() {
+			at = it.DeletedAt.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", it.Name, it.Username, at)
+	}
+	_ = w.Flush()
+	return exitOK
+}
+
+func matches(it *store.Item, query string) bool {
+	if query == "" {
+		return true
+	}
+	q := strings.ToLower(query)
+	return strings.Contains(strings.ToLower(it.Name), q) ||
+		strings.Contains(strings.ToLower(it.Username), q) ||
+		strings.Contains(strings.ToLower(strings.Join(it.URIs, " ")), q)
 }
 
 // ---------------------------------------------------------------- run

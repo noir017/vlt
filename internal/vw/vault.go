@@ -107,7 +107,17 @@ func (c *Client) UpdateCipher(ctx context.Context, id string, body map[string]an
 	return &Cipher{ID: id, Raw: out}, nil
 }
 
-// DeleteCipher removes an item.
+// TrashCipher soft-deletes an item (moves it to the trash).
+func (c *Client) TrashCipher(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPut, "/api/ciphers/"+id+"/delete", nil, nil, true)
+}
+
+// RestoreCipher takes an item out of the trash.
+func (c *Client) RestoreCipher(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPut, "/api/ciphers/"+id+"/restore", nil, nil, true)
+}
+
+// DeleteCipher permanently removes an item.
 func (c *Client) DeleteCipher(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/ciphers/"+id, nil, nil, true)
 }

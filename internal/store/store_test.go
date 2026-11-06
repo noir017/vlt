@@ -120,3 +120,34 @@ func TestFindByID(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestTrashFiltering(t *testing.T) {
+	v := testVault(t)
+	it, err := v.Find("svc/gitea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	it.Deleted = true
+	it.Raw["deletedDate"] = "2026-11-06T07:27:42.107188Z"
+
+	if _, err := v.Find("svc/gitea"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("trashed item still visible: %v", err)
+	}
+	if _, err := v.FindTrashed("svc/gitea"); err != nil {
+		t.Fatalf("FindTrashed: %v", err)
+	}
+	if _, err := v.FindByID(it.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindByID returned a trashed item")
+	}
+	if _, err := v.FindTrashedByID(it.ID); err != nil {
+		t.Fatalf("FindTrashedByID: %v", err)
+	}
+	if len(v.Trashed()) != 1 {
+		t.Fatalf("Trashed = %d", len(v.Trashed()))
+	}
+	for _, got := range v.Search("gitea") {
+		if got.ID == it.ID {
+			t.Fatal("Search returned a trashed item")
+		}
+	}
+}

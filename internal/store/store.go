@@ -14,18 +14,20 @@ import (
 
 // Item is one decrypted vault entry.
 type Item struct {
-	ID       string
-	Type     int
-	Name     string
-	Username string
-	Password string
-	TOTP     string
-	Notes    string
-	URIs     []string
-	FolderID string
-	Folder   string
-	Updated  time.Time
-	Raw      map[string]any
+	ID        string
+	Type      int
+	Name      string
+	Username  string
+	Password  string
+	TOTP      string
+	Notes     string
+	URIs      []string
+	FolderID  string
+	Folder    string
+	Updated   time.Time
+	Deleted   bool
+	DeletedAt time.Time
+	Raw       map[string]any
 }
 
 // Vault is the decrypted view of one sync response.
@@ -80,6 +82,12 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 			it.Updated = t
 		}
 	}
+	if dd, ok := c.Raw["deletedDate"].(string); ok && dd != "" {
+		it.Deleted = true
+		if t, err := time.Parse(time.RFC3339Nano, dd); err == nil {
+			it.DeletedAt = t
+		}
+	}
 	if login, ok := c.Raw["login"].(map[string]any); ok {
 		it.Username, _ = decField(key, login["username"])
 		it.Password, _ = decField(key, login["password"])
@@ -110,11 +118,16 @@ func (it *Item) HasSecret() bool {
 	return it.Password != "" || it.Notes != "" || it.TOTP != ""
 }
 
-// Find returns the single item with this exact name.
-func (v *Vault) Find(name string) (*Item, error) {
+// Find returns the single live item with this exact name.
+func (v *Vault) Find(name string) (*Item, error) { return v.findByName(name, false) }
+
+// FindTrashed returns the single trashed item with this exact name.
+func (v *Vault) FindTrashed(name string) (*Item, error) { return v.findByName(name, true) }
+
+func (v *Vault) findByName(name string, trashed bool) (*Item, error) {
 	var hits []*Item
 	for _, it := range v.Items {
-		if it.Name == name {
+		if it.Name == name && it.Deleted == trashed {
 			hits = append(hits, it)
 		}
 	}
@@ -133,14 +146,30 @@ func (v *Vault) Find(name string) (*Item, error) {
 	}
 }
 
-// FindByID returns the item with this server-side id.
-func (v *Vault) FindByID(id string) (*Item, error) {
+// FindByID returns the live item with this server-side id.
+func (v *Vault) FindByID(id string) (*Item, error) { return v.findByID(id, false) }
+
+// FindTrashedByID returns the trashed item with this id.
+func (v *Vault) FindTrashedByID(id string) (*Item, error) { return v.findByID(id, true) }
+
+func (v *Vault) findByID(id string, trashed bool) (*Item, error) {
 	for _, it := range v.Items {
-		if it.ID == id {
+		if it.ID == id && it.Deleted == trashed {
 			return it, nil
 		}
 	}
 	return nil, ErrNotFound
+}
+
+// Trashed lists items in the trash.
+func (v *Vault) Trashed() []*Item {
+	var out []*Item
+	for _, it := range v.Items {
+		if it.Deleted {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // Search returns items whose name, username or URI contains query.
@@ -148,6 +177,9 @@ func (v *Vault) Search(query string) []*Item {
 	q := strings.ToLower(query)
 	var out []*Item
 	for _, it := range v.Items {
+		if it.Deleted {
+			continue
+		}
 		if q == "" || strings.Contains(strings.ToLower(it.Name), q) ||
 			strings.Contains(strings.ToLower(it.Username), q) ||
 			strings.Contains(strings.ToLower(strings.Join(it.URIs, " ")), q) {

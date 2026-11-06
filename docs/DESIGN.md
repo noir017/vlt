@@ -18,7 +18,9 @@ vlt set <name> [--username U] [--uri U]
 vlt ls [query] [--json] [--folder F]
 vlt find <query> [--json]
 vlt mv <name> <new> [--folder F] [--json]
-vlt rm <name>... [--yes]
+vlt rm <name>... [--permanent] [--yes]
+vlt restore <name>... | --id <id>
+vlt trash [--json] [--empty --yes]
 vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
 vlt doctor
 vlt lock
@@ -29,6 +31,7 @@ vlt lock
 - `<name>` 是条目名，默认落在 folder `agent` 下，命名 `用途/系统`（如 `svc/gitea`、`api/newapi`）。
 - `get` 默认只打印元信息，机密字段打码。`--field` 输出单值；机密字段在 stdout 为 TTY 时拒绝执行，需 `--stdout` 或 `--reveal` 显式要求。
 - `--json` 输出结构化结果；不含机密，除非同时给 `--stdout`。
+- `rm` 默认软删除进垃圾箱（Vaultwarden 是 `PUT /ciphers/<id>/delete`），`--permanent` 才真删（`DELETE /ciphers/<id>`）；垃圾箱条目不会出现在 `ls`/`find`/`get` 里，要 `--trash`。
 - `set` 按名字 upsert：存在则更新给定字段，不存在则新建；未给的字段保持原值。显式给了来源但内容为空（如 `printf '' | vlt set x --password-stdin`）表示清空该字段。
 - `ls --json`、`get --json`、`set --json` 都带条目 id，便于后续按 id 操作。
 - `run` 把值注入子进程环境变量，不落 argv，透传 stdin/stdout/stderr 与退出码；`<name>` 不带字段时默认取 password。
