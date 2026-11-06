@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,6 +20,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/noir017/vlt/internal/crypt"
 	"github.com/noir017/vlt/internal/secret"
 	"github.com/noir017/vlt/internal/store"
 	"github.com/noir017/vlt/internal/totp"
@@ -579,11 +582,16 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 		return body, nil
 	}
 	login := map[string]any{
-		"uris":     uriList(uris),
+		"uris":     nil,
 		"username": nil,
 		"password": nil,
 		"totp":     nil,
 	}
+	encURIs, err := uriList(a.cl.Key, uris)
+	if err != nil {
+		return nil, err
+	}
+	login["uris"] = encURIs
 	if username.set && username.val != "" {
 		enc, err := a.cl.Key.Encrypt([]byte(username.val))
 		if err != nil {
@@ -655,8 +663,19 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 			login["username"] = enc
 		}
 	}
+	// Entries written by vlt <= 0.5.0 hold plaintext URIs, which official
+	// clients cannot decrypt; any update re-encrypts them.
+	if len(uris) == 0 && store.HasPlainURI(login) {
+		uris = item.URIs
+	}
 	if len(uris) > 0 {
-		login["uris"] = uriList(uris)
+		encURIs, err := uriList(a.cl.Key, uris)
+		if err != nil {
+			return nil, err
+		}
+		login["uris"] = encURIs
+		// legacy single-URI field mirrors uris[0]; drop the stale copy
+		delete(login, "uri")
 	}
 	if passwordSet {
 		if password == "" {
@@ -696,12 +715,23 @@ func itemType(t string) int {
 	return 1
 }
 
-func uriList(uris []string) []map[string]string {
-	out := make([]map[string]string, 0, len(uris))
+// uriList encrypts login URIs the way official clients do: the URI itself,
+// plus uriChecksum = Enc(base64(sha256(uri))) so clients can detect tampering.
+func uriList(key *crypt.Key, uris []string) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(uris))
 	for _, u := range uris {
-		out = append(out, map[string]string{"uri": u})
+		encURI, err := key.Encrypt([]byte(u))
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256([]byte(u))
+		encSum, err := key.Encrypt([]byte(base64.StdEncoding.EncodeToString(sum[:])))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"uri": encURI, "uriChecksum": encSum, "match": nil})
 	}
-	return out
+	return out, nil
 }
 
 func ensureFolder(ctx context.Context, a *app, name string) (string, error) {

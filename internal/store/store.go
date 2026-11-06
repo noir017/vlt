@@ -95,7 +95,7 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 		if uris, ok := login["uris"].([]any); ok {
 			for _, u := range uris {
 				if m, ok := u.(map[string]any); ok {
-					if s, ok := m["uri"].(string); ok {
+					if s, ok := decURI(key, m["uri"]); ok {
 						it.URIs = append(it.URIs, s)
 					}
 				}
@@ -103,6 +103,42 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 		}
 	}
 	return it, nil
+}
+
+// decURI reads one login URI. vlt up to 0.5.0 stored URIs in plaintext, so a
+// value that is not an EncString is taken as-is; an EncString that fails to
+// decrypt is dropped rather than shown as ciphertext.
+func decURI(key *crypt.Key, raw any) (string, bool) {
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return "", false
+	}
+	if !IsEncString(s) {
+		return s, true
+	}
+	plain, err := key.DecryptString(s)
+	if err != nil {
+		return "", false
+	}
+	return plain, true
+}
+
+// IsEncString reports whether s looks like a type-2 Bitwarden EncString.
+func IsEncString(s string) bool {
+	return strings.HasPrefix(s, "2.") && strings.Count(s, "|") == 2
+}
+
+// HasPlainURI reports whether a raw login carries a URI stored in plaintext.
+func HasPlainURI(login map[string]any) bool {
+	uris, _ := login["uris"].([]any)
+	for _, u := range uris {
+		if m, ok := u.(map[string]any); ok {
+			if s, ok := m["uri"].(string); ok && s != "" && !IsEncString(s) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func decField(key *crypt.Key, raw any) (string, error) {

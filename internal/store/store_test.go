@@ -95,6 +95,36 @@ func TestSearch(t *testing.T) {
 	}
 }
 
+func TestEncryptedAndLegacyURIs(t *testing.T) {
+	key := crypt.Stretch([]byte("0123456789abcdef0123456789abcdef"))
+	enc := func(s string) string {
+		out, err := key.Encrypt([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	sync := &vw.Sync{Ciphers: []vw.Cipher{{ID: "c1", Raw: map[string]any{
+		"type": float64(1), "name": enc("svc/x"),
+		"login": map[string]any{"uris": []any{
+			map[string]any{"uri": enc("https://new.example.com")},
+			map[string]any{"uri": "https://legacy.example.com"},
+			map[string]any{"uri": "2.bm90|aXQ=|YmFk"}, // undecryptable: dropped
+		}},
+	}}}}
+	v, err := New(sync, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := v.Items[0].URIs
+	if len(got) != 2 || got[0] != "https://new.example.com" || got[1] != "https://legacy.example.com" {
+		t.Fatalf("uris = %v", got)
+	}
+	if !HasPlainURI(v.Items[0].Raw["login"].(map[string]any)) {
+		t.Fatal("legacy plaintext uri not detected")
+	}
+}
+
 func TestCloneRawIsDeep(t *testing.T) {
 	raw := map[string]any{"login": map[string]any{"username": "x"}}
 	cp, err := CloneRaw(raw)
