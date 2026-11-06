@@ -60,6 +60,8 @@ func run(args []string) int {
 		return listImpl(rest, true)
 	case "rm", "remove":
 		return cmdRemove(rest)
+	case "mv", "rename":
+		return cmdMove(rest)
 	case "run":
 		return cmdRun(rest)
 	case "doctor":
@@ -82,13 +84,14 @@ func run(args []string) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `vlt - secrets for agents, via Vaultwarden
 
-  vlt get <name> [--field password|username|totp|totp-secret|uri|notes|name] [--stdout] [--reveal] [--json]
+  vlt get <name>|--id <id> [--field password|username|totp|totp-secret|uri|notes|name] [--stdout] [--reveal] [--json]
   vlt set <name> [--username U] [--uri U]...
                  [--password-stdin | --password-file F | --generate [--length N]]
                  [--note-stdin | --note-file F] [--type login|note] [--folder F]
   vlt ls [query] [--folder F] [--json]
   vlt find <query> [--json]
-  vlt rm <name> [--yes]
+  vlt mv <name> <new> [--folder F] [--json]
+  vlt rm <name>... [--yes]
   vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
   vlt doctor
   vlt lock
@@ -236,6 +239,7 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 func cmdGet(args []string) int {
 	fs := newFlags("get")
 	cfgPath := configFlag(fs)
+	id := fs.String("id", "", "look the item up by id instead of name")
 	field := fs.String("field", "", "field to print: name, username, password, totp, uri, notes")
 	toStdout := fs.Bool("stdout", false, "print the value (defaults to password)")
 	reveal := fs.Bool("reveal", false, "allow secret output to a terminal")
@@ -244,16 +248,27 @@ func cmdGet(args []string) int {
 	if err != nil {
 		return usageError(err)
 	}
-	if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" {
-		return usageError(errors.New("get needs exactly one item name"))
+	if *id == "" && (len(pos) != 1 || strings.TrimSpace(pos[0]) == "") {
+		return usageError(errors.New("get needs exactly one item name, or --id"))
 	}
-	name := pos[0]
+	if *id != "" && len(pos) != 0 {
+		return usageError(errors.New("use either a name or --id, not both"))
+	}
+	name := ""
+	if len(pos) == 1 {
+		name = pos[0]
+	}
 
 	a, err := openApp(context.Background(), *cfgPath)
 	if err != nil {
 		return failPlain(err)
 	}
-	item, err := a.vault.Find(name)
+	var item *store.Item
+	if *id != "" {
+		item, err = a.vault.FindByID(*id)
+	} else {
+		item, err = a.vault.Find(name)
+	}
 	if err != nil {
 		return a.fail(err)
 	}
@@ -279,6 +294,7 @@ func cmdGet(args []string) int {
 
 	if *asJSON {
 		out := map[string]any{
+			"id":       item.ID,
 			"name":     item.Name,
 			"username": item.Username,
 			"uris":     item.URIs,
@@ -349,6 +365,7 @@ func cmdSet(args []string) int {
 	fs.StringVar(&totpFile, "totp-file", "", "read a TOTP secret from a file")
 	fs.Var(&typ, "type", "login or note")
 	fs.Var(&folder, "folder", "folder (default: agent)")
+	asJSON := fs.Bool("json", false, "print the resulting item as JSON")
 	pos, perr := parseArgs(fs, args)
 	if perr != nil {
 		return usageError(perr)
@@ -444,6 +461,9 @@ func cmdSet(args []string) int {
 		return usageError(err)
 	}
 
+	passwordSet := passwordStdin || passwordFile != "" || generate
+	notesSet := noteStdin || noteFile != ""
+
 	existing, findErr := a.vault.Find(name)
 	if findErr != nil && !errors.Is(findErr, store.ErrNotFound) {
 		return a.fail(findErr)
@@ -454,7 +474,7 @@ func cmdSet(args []string) int {
 	} else if existing != nil && existing.Type == 2 {
 		kind = "note"
 	}
-	if existing == nil && kind == "login" && password == "" && !generate {
+	if existing == nil && kind == "login" && !passwordSet {
 		return usageError(errors.New("new login item needs --password-stdin, --password-file or --generate"))
 	}
 
@@ -478,21 +498,31 @@ func cmdSet(args []string) int {
 		if err != nil {
 			return a.fail(err)
 		}
-		if _, err := a.cl.CreateCipher(context.Background(), body); err != nil {
+		created, err := a.cl.CreateCipher(context.Background(), body)
+		if err != nil {
 			return a.fail(err)
 		}
-		fmt.Printf("created %s\n", name)
+		if *asJSON {
+			printItemJSON(created.ID, name, "created")
+		} else {
+			fmt.Printf("created %s\n", name)
+		}
 		return exitOK
 	}
 
-	body, err := buildUpdate(a, existing, name, kind, username, uris, password, notes, totpSecret, totpStdin || totpFile != "", folderID)
+	body, err := buildUpdate(a, existing, name, kind, username, uris, password, notes, totpSecret,
+		totpStdin || totpFile != "", passwordSet, notesSet, folderID)
 	if err != nil {
 		return a.fail(err)
 	}
 	if _, err := a.cl.UpdateCipher(context.Background(), existing.ID, body); err != nil {
 		return a.fail(err)
 	}
-	fmt.Printf("updated %s\n", name)
+	if *asJSON {
+		printItemJSON(existing.ID, name, "updated")
+	} else {
+		fmt.Printf("updated %s\n", name)
+	}
 	return exitOK
 }
 
@@ -554,7 +584,7 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 	return body, nil
 }
 
-func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet bool, folderID string) (map[string]any, error) {
+func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet, passwordSet, notesSet bool, folderID string) (map[string]any, error) {
 	raw, err := store.CloneRaw(item.Raw)
 	if err != nil {
 		return nil, err
@@ -569,12 +599,16 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 	if folderID != "" {
 		raw["folderId"] = folderID
 	}
-	if notes != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(notes))
-		if err != nil {
-			return nil, err
+	if notesSet {
+		if notes == "" {
+			raw["notes"] = nil
+		} else {
+			enc, err := a.cl.Key.Encrypt([]byte(notes))
+			if err != nil {
+				return nil, err
+			}
+			raw["notes"] = enc
 		}
-		raw["notes"] = enc
 	}
 	if kind == "note" {
 		delete(raw, "login")
@@ -599,12 +633,16 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 	if len(uris) > 0 {
 		login["uris"] = uriList(uris)
 	}
-	if password != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(password))
-		if err != nil {
-			return nil, err
+	if passwordSet {
+		if password == "" {
+			login["password"] = nil
+		} else {
+			enc, err := a.cl.Key.Encrypt([]byte(password))
+			if err != nil {
+				return nil, err
+			}
+			login["password"] = enc
 		}
-		login["password"] = enc
 	}
 	if totpSet {
 		if totpSecret == "" {
@@ -618,6 +656,12 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		}
 	}
 	return raw, nil
+}
+
+func printItemJSON(id, name, action string) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(map[string]string{"id": id, "name": name, "action": action})
 }
 
 func itemType(t string) int {
@@ -680,6 +724,7 @@ func listImpl(args []string, requireQuery bool) int {
 		out := make([]map[string]any, 0, len(items))
 		for _, it := range items {
 			out = append(out, map[string]any{
+				"id":       it.ID,
 				"name":     it.Name,
 				"username": it.Username,
 				"uris":     it.URIs,
@@ -716,31 +761,128 @@ func cmdRemove(args []string) int {
 	fs := newFlags("rm")
 	cfgPath := configFlag(fs)
 	yes := fs.Bool("yes", false, "do not ask")
+	id := fs.String("id", "", "delete by id instead of name")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return usageError(err)
 	}
-	if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" {
-		return usageError(errors.New("rm needs exactly one item name"))
+	if *id != "" && len(pos) != 0 {
+		return usageError(errors.New("use either names or --id, not both"))
 	}
-	name := pos[0]
+	if *id == "" && len(pos) == 0 {
+		return usageError(errors.New("rm needs at least one item name, or --id"))
+	}
+	for _, name := range pos {
+		if strings.TrimSpace(name) == "" {
+			return usageError(errors.New("empty item name"))
+		}
+	}
+
 	a, err := openApp(context.Background(), *cfgPath)
 	if err != nil {
 		return failPlain(err)
 	}
-	item, err := a.vault.Find(name)
-	if err != nil {
-		return a.fail(err)
+	var targets []*store.Item
+	if *id != "" {
+		item, err := a.vault.FindByID(*id)
+		if err != nil {
+			return a.fail(err)
+		}
+		targets = append(targets, item)
+	} else {
+		for _, name := range pos {
+			item, err := a.vault.Find(name)
+			if err != nil {
+				return a.fail(err)
+			}
+			targets = append(targets, item)
+		}
 	}
 	if !*yes {
-		if !isTTY(os.Stdin) || !confirmed("delete %q?", name) {
+		if !isTTY(os.Stdin) || !confirmed("delete %d item(s)?", len(targets)) {
 			return usageError(errors.New("refusing to delete without --yes"))
 		}
 	}
-	if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
+	for _, item := range targets {
+		if err := a.cl.DeleteCipher(context.Background(), item.ID); err != nil {
+			return a.fail(err)
+		}
+		fmt.Printf("deleted %s\n", item.Name)
+	}
+	return exitOK
+}
+
+// ---------------------------------------------------------------- mv
+
+func cmdMove(args []string) int {
+	fs := newFlags("mv")
+	cfgPath := configFlag(fs)
+	id := fs.String("id", "", "rename by id instead of name")
+	var folder optString
+	fs.Var(&folder, "folder", "move to this folder")
+	asJSON := fs.Bool("json", false, "JSON output")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return usageError(err)
+	}
+	if *id == "" && len(pos) != 2 {
+		return usageError(errors.New("mv needs <old> <new>, or --id <id> <new>"))
+	}
+	if *id != "" && len(pos) != 1 {
+		return usageError(errors.New("mv --id needs exactly one new name"))
+	}
+	if *id == "" && strings.TrimSpace(pos[0]) == "" {
+		return usageError(errors.New("empty item name"))
+	}
+	newName := pos[len(pos)-1]
+	if strings.TrimSpace(newName) == "" {
+		return usageError(errors.New("new name must not be empty"))
+	}
+
+	a, err := openApp(context.Background(), *cfgPath)
+	if err != nil {
+		return failPlain(err)
+	}
+	var item *store.Item
+	if *id != "" {
+		item, err = a.vault.FindByID(*id)
+	} else {
+		item, err = a.vault.Find(pos[0])
+	}
+	if err != nil {
 		return a.fail(err)
 	}
-	fmt.Printf("deleted %s\n", name)
+	if item.Name != newName {
+		if other, err := a.vault.Find(newName); err == nil && other.ID != item.ID {
+			return usageError(fmt.Errorf("an item named %q already exists", newName))
+		}
+	}
+
+	raw, err := store.CloneRaw(item.Raw)
+	if err != nil {
+		return a.fail(err)
+	}
+	enc, err := a.cl.Key.Encrypt([]byte(newName))
+	if err != nil {
+		return a.fail(err)
+	}
+	raw["name"] = enc
+	raw["encryptedFor"] = a.vault.UID
+	if folder.set {
+		fid, err := ensureFolder(context.Background(), a, folder.val)
+		if err != nil {
+			return a.fail(err)
+		}
+		raw["folderId"] = fid
+	}
+	if _, err := a.cl.UpdateCipher(context.Background(), item.ID, raw); err != nil {
+		return a.fail(err)
+	}
+	if *asJSON {
+		printItemJSON(item.ID, newName, "renamed")
+	} else {
+		fmt.Printf("renamed %s -> %s\n", item.Name, newName)
+	}
 	return exitOK
 }
 

@@ -133,6 +133,16 @@ func (v *Vault) Find(name string) (*Item, error) {
 	}
 }
 
+// FindByID returns the item with this server-side id.
+func (v *Vault) FindByID(id string) (*Item, error) {
+	for _, it := range v.Items {
+		if it.ID == id {
+			return it, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 // Search returns items whose name, username or URI contains query.
 func (v *Vault) Search(query string) []*Item {
 	q := strings.ToLower(query)

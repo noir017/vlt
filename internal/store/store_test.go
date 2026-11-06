@@ -106,3 +106,17 @@ func TestCloneRawIsDeep(t *testing.T) {
 		t.Fatal("clone shares nested maps")
 	}
 }
+
+func TestFindByID(t *testing.T) {
+	v := testVault(t)
+	it, err := v.FindByID("c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Name != "api/newapi" {
+		t.Fatalf("name = %q", it.Name)
+	}
+	if _, err := v.FindByID("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -11,13 +11,14 @@
 ## 使用面
 
 ```
-vlt get <name> [--field password|username|totp|uri|notes|name] [--stdout] [--json]
+vlt get <name>|--id <id> [--field password|username|totp|totp-secret|uri|notes|name] [--stdout] [--json]
 vlt set <name> [--username U] [--uri U]
                [--password-stdin | --password-file F | --generate [--length N]]
                [--note-stdin | --note-file F] [--type login|note] [--folder agent]
 vlt ls [query] [--json] [--folder F]
 vlt find <query> [--json]
-vlt rm <name> [--yes]
+vlt mv <name> <new> [--folder F] [--json]
+vlt rm <name>... [--yes]
 vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
 vlt doctor
 vlt lock
@@ -28,7 +29,8 @@ vlt lock
 - `<name>` 是条目名，默认落在 folder `agent` 下，命名 `用途/系统`（如 `svc/gitea`、`api/newapi`）。
 - `get` 默认只打印元信息，机密字段打码。`--field` 输出单值；机密字段在 stdout 为 TTY 时拒绝执行，需 `--stdout` 或 `--reveal` 显式要求。
 - `--json` 输出结构化结果；不含机密，除非同时给 `--stdout`。
-- `set` 按名字 upsert：存在则更新给定字段，不存在则新建；未给的字段保持原值。
+- `set` 按名字 upsert：存在则更新给定字段，不存在则新建；未给的字段保持原值。显式给了来源但内容为空（如 `printf '' | vlt set x --password-stdin`）表示清空该字段。
+- `ls --json`、`get --json`、`set --json` 都带条目 id，便于后续按 id 操作。
 - `run` 把值注入子进程环境变量，不落 argv，透传 stdin/stdout/stderr 与退出码；`<name>` 不带字段时默认取 password。
 - 退出码：0 成功，1 通用错误，2 用法错误，3 未找到，4 认证失败，5 网络/服务错误。
 
