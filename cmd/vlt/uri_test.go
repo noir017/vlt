@@ -48,7 +48,7 @@ func checkURI(t *testing.T, key *crypt.Key, m map[string]any, want string) {
 
 func TestNewItemEncryptsURIs(t *testing.T) {
 	a := testApp()
-	body, err := buildNewItem(a, "svc/x", "login", optString{}, []string{"https://a.example.com", "https://b.example.com"}, "pw", "", "", "")
+	body, err := buildNewItem(a, "svc/x", "login", optString{}, []string{"https://a.example.com", "https://b.example.com"}, "pw", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestUpdateReencryptsLegacyURIs(t *testing.T) {
 		}},
 	}
 	// only the password changes; the plaintext URI must still be re-encrypted
-	body, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new-pw", "", "", false, true, false, "")
+	body, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new-pw", "", "", false, true, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

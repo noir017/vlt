@@ -55,6 +55,8 @@ vlt find example.com --json          # includes each item id
 
 # update, rename, delete
 printf '%s' "$NEW" | vlt set svc/gitea --password-stdin   # upsert, keeps other fields
+vlt set svc/gitea --field pin=1234 --field-hidden secret=abc # custom fields
+vlt set svc/gitea --field pin=                            # empty value deletes the field
 vlt mv svc/gitea svc/gitea-old
 vlt rm svc/gitea-old svc/retired --yes                    # several at once, to the trash
 vlt rm --id 5f0c... --yes

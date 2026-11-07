@@ -12,6 +12,13 @@ import (
 	"github.com/noir017/vlt/internal/vw"
 )
 
+// CustomField is one decrypted custom field on a vault entry.
+type CustomField struct {
+	Type  int // 0 = text, 1 = hidden, 2 = boolean, 3 = linked
+	Name  string
+	Value string
+}
+
 // Item is one decrypted vault entry.
 type Item struct {
 	ID        string
@@ -22,6 +29,7 @@ type Item struct {
 	TOTP      string
 	Notes     string
 	URIs      []string
+	Fields    []CustomField
 	FolderID  string
 	Folder    string
 	Updated   time.Time
@@ -112,6 +120,23 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 			}
 		}
 	}
+	if rawFields, ok := c.Raw["fields"].([]any); ok {
+		for _, rf := range rawFields {
+			if m, ok := rf.(map[string]any); ok {
+				fType := 0
+				if t, ok := m["type"].(float64); ok {
+					fType = int(t)
+				}
+				fName, _ := decField(fieldKey, m["name"])
+				fVal, _ := decField(fieldKey, m["value"])
+				it.Fields = append(it.Fields, CustomField{
+					Type:  fType,
+					Name:  fName,
+					Value: fVal,
+				})
+			}
+		}
+	}
 	return it, nil
 }
 
@@ -159,9 +184,27 @@ func decField(key *crypt.Key, raw any) (string, error) {
 	return key.DecryptString(s)
 }
 
+// GetField returns a custom field by name (case-insensitive).
+func (it *Item) GetField(name string) (CustomField, bool) {
+	for _, f := range it.Fields {
+		if strings.EqualFold(f.Name, name) {
+			return f, true
+		}
+	}
+	return CustomField{}, false
+}
+
 // HasSecret reports whether the item carries anything that must be masked.
 func (it *Item) HasSecret() bool {
-	return it.Password != "" || it.Notes != "" || it.TOTP != ""
+	if it.Password != "" || it.Notes != "" || it.TOTP != "" {
+		return true
+	}
+	for _, f := range it.Fields {
+		if f.Type == 1 && f.Value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Find returns the single live item with this exact name.
@@ -228,11 +271,22 @@ func (v *Vault) Search(query string) []*Item {
 		}
 		if q == "" || strings.Contains(strings.ToLower(it.Name), q) ||
 			strings.Contains(strings.ToLower(it.Username), q) ||
-			strings.Contains(strings.ToLower(strings.Join(it.URIs, " ")), q) {
+			strings.Contains(strings.ToLower(strings.Join(it.URIs, " ")), q) ||
+			matchCustomFields(it.Fields, q) {
 			out = append(out, it)
 		}
 	}
 	return out
+}
+
+func matchCustomFields(fields []CustomField, q string) bool {
+	for _, f := range fields {
+		if strings.Contains(strings.ToLower(f.Name), q) ||
+			strings.Contains(strings.ToLower(f.Value), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // FolderID resolves a folder name, creating it when missing.

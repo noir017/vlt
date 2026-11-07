@@ -221,3 +221,46 @@ func TestDecryptItemWithItemKey(t *testing.T) {
 		t.Fatalf("unexpected item %+v", it)
 	}
 }
+
+func TestDecryptAndSearchCustomFields(t *testing.T) {
+	key := crypt.Stretch([]byte("0123456789abcdef0123456789abcdef"))
+	enc := func(s string) string {
+		out, err := key.Encrypt([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	sync := &vw.Sync{Ciphers: []vw.Cipher{{ID: "c1", Raw: map[string]any{
+		"type": float64(1), "name": enc("mail/139"),
+		"fields": []any{
+			map[string]any{"type": float64(0), "name": enc("alias_1"), "value": enc("alias1@139.com")},
+			map[string]any{"type": float64(1), "name": enc("secret_pin"), "value": enc("1234")},
+		},
+	}}}}
+	v, err := New(sync, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := v.Find("mail/139")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.Fields) != 2 {
+		t.Fatalf("fields = %d", len(it.Fields))
+	}
+	f1, ok := it.GetField("alias_1")
+	if !ok || f1.Value != "alias1@139.com" || f1.Type != 0 {
+		t.Fatalf("alias_1 = %+v", f1)
+	}
+	f2, ok := it.GetField("SECRET_PIN")
+	if !ok || f2.Value != "1234" || f2.Type != 1 {
+		t.Fatalf("secret_pin = %+v", f2)
+	}
+	if !it.HasSecret() {
+		t.Fatal("item with hidden custom field should have HasSecret == true")
+	}
+	if got := len(v.Search("alias1@139.com")); got != 1 {
+		t.Fatalf("search by custom field value = %d", got)
+	}
+}

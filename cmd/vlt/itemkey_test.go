@@ -8,7 +8,7 @@ import (
 
 func TestNewItemCarriesItemKey(t *testing.T) {
 	a := testApp()
-	body, err := buildNewItem(a, "svc/x", "login", optString{}, nil, "pw", "note", "", "")
+	body, err := buildNewItem(a, "svc/x", "login", optString{}, nil, "pw", "note", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,13 +23,13 @@ func TestNewItemCarriesItemKey(t *testing.T) {
 
 func TestUpdateKeepsExistingItemKey(t *testing.T) {
 	a := testApp()
-	body, err := buildNewItem(a, "svc/x", "login", optString{}, []string{"https://x.example.com"}, "old", "", "", "")
+	body, err := buildNewItem(a, "svc/x", "login", optString{}, []string{"https://x.example.com"}, "old", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	itemKey := bodyKey(t, a, body)
 	item := &store.Item{ID: "c1", Raw: body}
-	upd, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new", "", "", false, true, false, "")
+	upd, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new", "", "", false, true, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestUpdateMigratesLegacyItem(t *testing.T) {
 		"type": float64(1), "name": mustEnc(t, a, "svc/old"),
 		"login": map[string]any{"username": mustEnc(t, a, "root")},
 	}}
-	upd, err := buildUpdate(a, item, "svc/old", "login", optString{}, nil, "", "", "", false, false, false, "")
+	upd, err := buildUpdate(a, item, "svc/old", "login", optString{}, nil, "", "", "", false, false, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

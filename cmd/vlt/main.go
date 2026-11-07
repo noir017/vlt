@@ -91,8 +91,9 @@ func run(args []string) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `vlt - secrets for agents, via Vaultwarden
 
-  vlt get <name>|--id <id> [--field password|username|totp|totp-secret|uri|notes|name] [--stdout] [--reveal] [--json]
+  vlt get <name>|--id <id> [--field <field>] [--stdout] [--reveal] [--json]
   vlt set <name> [--username U] [--uri U]...
+                 [--field name=value]... [--field-hidden name=value]...
                  [--password-stdin | --password-file F | --generate [--length N]]
                  [--note-stdin | --note-file F] [--type login|note] [--folder F]
   vlt ls [query] [--folder F] [--json]
@@ -305,7 +306,7 @@ func cmdGet(args []string) int {
 		if err != nil {
 			return a.fail(err)
 		}
-		if isSecretField(f) {
+		if isSecretField(f, item) {
 			a.red.Add(val)
 			if isTTY(os.Stdout) && !*reveal && !*toStdout {
 				return usageError(fmt.Errorf("refusing to print %s to a terminal; use --stdout or --reveal", f))
@@ -325,6 +326,20 @@ func cmdGet(args []string) int {
 			"updated":  item.Updated,
 			"type":     item.Type,
 		}
+		if len(item.Fields) > 0 {
+			fieldsOut := make([]map[string]any, len(item.Fields))
+			for i, cf := range item.Fields {
+				fo := map[string]any{
+					"name": cf.Name,
+					"type": cf.Type,
+				}
+				if cf.Type != 1 || *reveal {
+					fo["value"] = cf.Value
+				}
+				fieldsOut[i] = fo
+			}
+			out["fields"] = fieldsOut
+		}
 		if *reveal {
 			out["password"] = item.Password
 			out["totp"] = item.TOTP
@@ -343,6 +358,13 @@ func cmdGet(args []string) int {
 	}
 	if item.Folder != "" {
 		fmt.Printf("folder:   %s\n", item.Folder)
+	}
+	for _, cf := range item.Fields {
+		if cf.Type == 1 {
+			fmt.Printf("field %s: <hidden, use --field %s --stdout>\n", cf.Name, cf.Name)
+		} else {
+			fmt.Printf("field %s: %s\n", cf.Name, cf.Value)
+		}
 	}
 	if !item.Updated.IsZero() {
 		fmt.Printf("updated:  %s\n", item.Updated.Local().Format("2006-01-02 15:04:05"))
@@ -372,12 +394,14 @@ func cmdSet(args []string) int {
 	fs := newFlags("set")
 	cfgPath := configFlag(fs)
 	var username, folder, typ optString
-	var uris stringList
+	var uris, customFields, customHiddenFields stringList
 	var passwordStdin, generate, noteStdin, totpStdin bool
 	var passwordFile, noteFile, totpFile string
 	var length int
 	fs.Var(&username, "username", "username")
 	fs.Var(&uris, "uri", "URI (repeatable)")
+	fs.Var(&customFields, "field", "custom field name=value (repeatable, empty value deletes)")
+	fs.Var(&customHiddenFields, "field-hidden", "custom hidden field name=value (repeatable)")
 	fs.BoolVar(&passwordStdin, "password-stdin", false, "read the password from stdin")
 	fs.StringVar(&passwordFile, "password-file", "", "read the password from a file")
 	fs.BoolVar(&generate, "generate", false, "generate a random password")
@@ -397,6 +421,10 @@ func cmdSet(args []string) int {
 		return usageError(errors.New("set needs exactly one item name"))
 	}
 	name := pos[0]
+	parsedFields, err := parseCustomFieldArgs(customFields, customHiddenFields)
+	if err != nil {
+		return usageError(err)
+	}
 	if typ.set && typ.val != "login" && typ.val != "note" {
 		return usageError(errors.New("--type must be login or note"))
 	}
@@ -437,6 +465,11 @@ func cmdSet(args []string) int {
 	a, err := openApp(context.Background(), *cfgPath)
 	if err != nil {
 		return failPlain(err)
+	}
+	for _, cf := range parsedFields {
+		if cf.Type == 1 && cf.Value != "" {
+			a.red.Add(cf.Value)
+		}
 	}
 
 	var password string
@@ -522,7 +555,7 @@ func cmdSet(args []string) int {
 	}
 
 	if existing == nil {
-		body, err := buildNewItem(a, name, kind, username, uris, password, notes, totpSecret, folderID)
+		body, err := buildNewItem(a, name, kind, username, uris, password, notes, totpSecret, folderID, parsedFields)
 		if err != nil {
 			return a.fail(err)
 		}
@@ -539,7 +572,7 @@ func cmdSet(args []string) int {
 	}
 
 	body, err := buildUpdate(a, existing, name, kind, username, uris, password, notes, totpSecret,
-		totpStdin || totpFile != "", passwordSet, notesSet, folderID)
+		totpStdin || totpFile != "", passwordSet, notesSet, folderID, parsedFields)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -554,7 +587,7 @@ func cmdSet(args []string) int {
 	return exitOK
 }
 
-func buildNewItem(a *app, name, kind string, username optString, uris []string, password, notes, totpSecret, folderID string) (map[string]any, error) {
+func buildNewItem(a *app, name, kind string, username optString, uris []string, password, notes, totpSecret, folderID string, fields []customFieldArg) (map[string]any, error) {
 	itemKey, err := crypt.NewItemKey()
 	if err != nil {
 		return nil, err
@@ -585,6 +618,9 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 			return nil, err
 		}
 		body["notes"] = enc
+	}
+	if err := applyCustomFields(itemKey, body, fields); err != nil {
+		return nil, err
 	}
 	if kind == "note" {
 		body["secureNote"] = map[string]any{"type": 0}
@@ -626,7 +662,7 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 	return body, nil
 }
 
-func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet, passwordSet, notesSet bool, folderID string) (map[string]any, error) {
+func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet, passwordSet, notesSet bool, folderID string, fields []customFieldArg) (map[string]any, error) {
 	raw, err := store.CloneRaw(item.Raw)
 	if err != nil {
 		return nil, err
@@ -711,6 +747,9 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 			}
 			login["totp"] = enc
 		}
+	}
+	if err := applyCustomFields(itemKey, raw, fields); err != nil {
+		return nil, err
 	}
 	return raw, nil
 }
@@ -1290,16 +1329,140 @@ func itemField(it *store.Item, f string) (string, error) {
 		}
 		return cfg.Code(time.Now()), nil
 	default:
-		return "", fmt.Errorf("unknown field %q; use name, username, password, totp, totp-secret, uri or notes", f)
+		if cf, ok := it.GetField(f); ok {
+			return cf.Value, nil
+		}
+		return "", fmt.Errorf("unknown field %q; use name, username, password, totp, totp-secret, uri, notes, or a custom field name", f)
 	}
 }
 
-func isSecretField(f string) bool {
+func isSecretField(f string, it *store.Item) bool {
 	switch f {
 	case "password", "totp", "otp", "totp-secret", "notes", "note":
 		return true
 	}
+	if it != nil {
+		if cf, ok := it.GetField(f); ok && cf.Type == 1 {
+			return true
+		}
+	}
 	return false
+}
+
+type customFieldArg struct {
+	Type  int // 0 = text, 1 = hidden
+	Name  string
+	Value string
+}
+
+func parseCustomFieldArgs(textFields, hiddenFields []string) ([]customFieldArg, error) {
+	var out []customFieldArg
+	for _, spec := range textFields {
+		k, v, ok := strings.Cut(spec, "=")
+		if !ok || strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("invalid --field %q; want name=value", spec)
+		}
+		out = append(out, customFieldArg{Type: 0, Name: strings.TrimSpace(k), Value: v})
+	}
+	for _, spec := range hiddenFields {
+		k, v, ok := strings.Cut(spec, "=")
+		if !ok || strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("invalid --field-hidden %q; want name=value", spec)
+		}
+		out = append(out, customFieldArg{Type: 1, Name: strings.TrimSpace(k), Value: v})
+	}
+	return out, nil
+}
+
+func applyCustomFields(itemKey *crypt.Key, raw map[string]any, fields []customFieldArg) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	var existingList []any
+	if l, ok := raw["fields"].([]any); ok {
+		existingList = l
+	}
+
+	var updated []any
+	applied := make(map[string]bool)
+
+	for _, rawItem := range existingList {
+		m, ok := rawItem.(map[string]any)
+		if !ok {
+			updated = append(updated, rawItem)
+			continue
+		}
+		nameStr, _ := m["name"].(string)
+		var decName string
+		var err error
+		if store.IsEncString(nameStr) {
+			decName, err = itemKey.DecryptString(nameStr)
+			if err != nil {
+				updated = append(updated, rawItem)
+				continue
+			}
+		} else {
+			decName = nameStr
+		}
+
+		matchedIndex := -1
+		for i := len(fields) - 1; i >= 0; i-- {
+			if strings.EqualFold(fields[i].Name, decName) {
+				matchedIndex = i
+				break
+			}
+		}
+
+		if matchedIndex >= 0 {
+			arg := fields[matchedIndex]
+			applied[strings.ToLower(arg.Name)] = true
+			if arg.Value == "" {
+				// empty value deletes the field
+				continue
+			}
+			encName, err := itemKey.Encrypt([]byte(arg.Name))
+			if err != nil {
+				return err
+			}
+			encVal, err := itemKey.Encrypt([]byte(arg.Value))
+			if err != nil {
+				return err
+			}
+			m["name"] = encName
+			m["value"] = encVal
+			m["type"] = float64(arg.Type)
+			updated = append(updated, m)
+		} else {
+			updated = append(updated, m)
+		}
+	}
+
+	for _, arg := range fields {
+		if applied[strings.ToLower(arg.Name)] {
+			continue
+		}
+		applied[strings.ToLower(arg.Name)] = true
+		if arg.Value == "" {
+			continue
+		}
+		encName, err := itemKey.Encrypt([]byte(arg.Name))
+		if err != nil {
+			return err
+		}
+		encVal, err := itemKey.Encrypt([]byte(arg.Value))
+		if err != nil {
+			return err
+		}
+		updated = append(updated, map[string]any{
+			"type":     float64(arg.Type),
+			"name":     encName,
+			"value":    encVal,
+			"linkedId": nil,
+		})
+	}
+
+	raw["fields"] = updated
+	return nil
 }
 
 func readInput(r io.Reader) (string, error) {
