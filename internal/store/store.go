@@ -68,12 +68,22 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 	if n, ok := c.Raw["type"].(float64); ok {
 		it.Type = int(n)
 	}
-	name, err := decField(key, c.Raw["name"])
+	// Items created by current Bitwarden clients carry their own wrapped key;
+	// fields are encrypted with it, not with the account key.
+	fieldKey := key
+	if wrapped, _ := c.Raw["key"].(string); wrapped != "" {
+		ik, err := key.UnwrapItemKey(wrapped)
+		if err != nil {
+			return nil, fmt.Errorf("cannot decrypt item %s: %w", c.ID, err)
+		}
+		fieldKey = ik
+	}
+	name, err := decField(fieldKey, c.Raw["name"])
 	if err != nil {
 		return nil, fmt.Errorf("cannot decrypt item %s: %w", c.ID, err)
 	}
 	it.Name = name
-	it.Notes, _ = decField(key, c.Raw["notes"])
+	it.Notes, _ = decField(fieldKey, c.Raw["notes"])
 	if fid, ok := c.Raw["folderId"].(string); ok {
 		it.FolderID = fid
 	}
@@ -89,13 +99,13 @@ func decryptItem(c vw.Cipher, key *crypt.Key) (*Item, error) {
 		}
 	}
 	if login, ok := c.Raw["login"].(map[string]any); ok {
-		it.Username, _ = decField(key, login["username"])
-		it.Password, _ = decField(key, login["password"])
-		it.TOTP, _ = decField(key, login["totp"])
+		it.Username, _ = decField(fieldKey, login["username"])
+		it.Password, _ = decField(fieldKey, login["password"])
+		it.TOTP, _ = decField(fieldKey, login["totp"])
 		if uris, ok := login["uris"].([]any); ok {
 			for _, u := range uris {
 				if m, ok := u.(map[string]any); ok {
-					if s, ok := decURI(key, m["uri"]); ok {
+					if s, ok := decURI(fieldKey, m["uri"]); ok {
 						it.URIs = append(it.URIs, s)
 					}
 				}

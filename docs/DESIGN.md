@@ -78,6 +78,8 @@ BW_PASSWORD=...
   - 新建：`POST /api/ciphers`；更新：`PUT /api/ciphers/<id>`；删除：`DELETE /api/ciphers/<id>`。
   - 请求体必须带 `"encryptedFor": "<账号 uuid>"`，缺失或为 null 会 422。这是 2025 版官方 CLI 写不进去的原因。
   - login 条目形如 `{"type":1,"name":enc,"notes":enc,"favorite":false,"reprompt":0,"folderId":null,"organizationId":null,"encryptedFor":uid,"login":{"uris":[{"uri":"..."}],"username":enc,"password":enc,"totp":enc|null}}`。
+  - 条目可带 `key`：账号 key 包裹的 64 字节条目密钥（同样是 type 2 EncString）。有 `key` 时 name、notes、login 各字段都用条目密钥加解密；没有则回退账号 key。网页版新建的条目都带 `key`。
+  - vlt 新建条目默认生成条目密钥；更新无 `key` 的旧条目时把整条 EncString 重加密迁移。组织共享条目的 RSA 包裹（类型 4/7）不支持。
 - 文件夹：`GET /api/folders`，`POST /api/folders` body `{"name": enc}`。
 - TOTP：`login.totp` 可能是 `otpauth://` URI 或裸 base32；按 RFC 6238（SHA1、6 位、30 秒）计算。
 - 限流：登录接口有按 IP 的限流（429）。同一次调用内复用 token；跨调用可用 token 缓存（见上）。

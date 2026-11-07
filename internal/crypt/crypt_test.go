@@ -104,3 +104,29 @@ func mustHex(t *testing.T, s string) []byte {
 	}
 	return b
 }
+
+func TestItemKeyWrapUnwrap(t *testing.T) {
+	account := Stretch([]byte("0123456789abcdef0123456789abcdef"))
+	item, err := NewItemKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Bytes()) != ItemKeySize {
+		t.Fatalf("item key length = %d", len(item.Bytes()))
+	}
+	wrapped, err := account.WrapItemKey(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := account.UnwrapItemKey(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Bytes()) != string(item.Bytes()) {
+		t.Fatal("unwrapped item key differs")
+	}
+	other := Stretch([]byte("fedcba9876543210fedcba9876543210"))
+	if _, err := other.UnwrapItemKey(wrapped); err == nil {
+		t.Fatal("foreign account key unwrapped item key")
+	}
+}

@@ -86,6 +86,43 @@ func hmacSum(key, msg []byte) []byte {
 	return m.Sum(nil)
 }
 
+// ItemKeySize is the serialized length of a Bitwarden per-item key: a 32-byte
+// AES key followed by a 32-byte HMAC key.
+const ItemKeySize = 64
+
+// NewItemKey returns a fresh random per-item key.
+func NewItemKey() (*Key, error) {
+	b := make([]byte, ItemKeySize)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return &Key{Enc: b[:32], Mac: b[32:]}, nil
+}
+
+// Bytes serializes the key the way it is stored inside a wrapped cipher key.
+func (k *Key) Bytes() []byte {
+	out := make([]byte, 0, len(k.Enc)+len(k.Mac))
+	out = append(out, k.Enc...)
+	return append(out, k.Mac...)
+}
+
+// WrapItemKey encrypts a per-item key with the account key (type 2 EncString).
+func (k *Key) WrapItemKey(item *Key) (string, error) {
+	return k.Encrypt(item.Bytes())
+}
+
+// UnwrapItemKey decrypts a cipher key wrapped by the account key.
+func (k *Key) UnwrapItemKey(s string) (*Key, error) {
+	b, err := k.Decrypt(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != ItemKeySize {
+		return nil, fmt.Errorf("item key has unexpected length %d", len(b))
+	}
+	return &Key{Enc: b[:32], Mac: b[32:]}, nil
+}
+
 // Encrypt encodes plaintext as a Bitwarden EncString of type 2.
 func (k *Key) Encrypt(plain []byte) (string, error) {
 	iv := make([]byte, aes.BlockSize)

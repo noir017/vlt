@@ -15,6 +15,20 @@ func testApp() *app {
 	return &app{cl: &vw.Client{Key: key}, vault: &store.Vault{Key: key, UID: "user-1"}}
 }
 
+// bodyKey unwraps the per-item key stored on a written cipher.
+func bodyKey(t *testing.T, a *app, body map[string]any) *crypt.Key {
+	t.Helper()
+	wrapped, _ := body["key"].(string)
+	if wrapped == "" {
+		t.Fatal("item has no wrapped key")
+	}
+	k, err := a.cl.Key.UnwrapItemKey(wrapped)
+	if err != nil {
+		t.Fatalf("unwrap item key: %v", err)
+	}
+	return k
+}
+
 // checkURI asserts one written URI is encrypted and carries a valid checksum.
 func checkURI(t *testing.T, key *crypt.Key, m map[string]any, want string) {
 	t.Helper()
@@ -42,8 +56,9 @@ func TestNewItemEncryptsURIs(t *testing.T) {
 	if len(uris) != 2 {
 		t.Fatalf("uris = %d", len(uris))
 	}
-	checkURI(t, a.cl.Key, uris[0], "https://a.example.com")
-	checkURI(t, a.cl.Key, uris[1], "https://b.example.com")
+	itemKey := bodyKey(t, a, body)
+	checkURI(t, itemKey, uris[0], "https://a.example.com")
+	checkURI(t, itemKey, uris[1], "https://b.example.com")
 }
 
 func TestUpdateReencryptsLegacyURIs(t *testing.T) {
@@ -68,5 +83,5 @@ func TestUpdateReencryptsLegacyURIs(t *testing.T) {
 	if len(uris) != 1 {
 		t.Fatalf("uris = %d", len(uris))
 	}
-	checkURI(t, a.cl.Key, uris[0], "https://legacy.example.com")
+	checkURI(t, bodyKey(t, a, body), uris[0], "https://legacy.example.com")
 }

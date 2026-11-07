@@ -181,3 +181,43 @@ func TestTrashFiltering(t *testing.T) {
 		}
 	}
 }
+
+func TestDecryptItemWithItemKey(t *testing.T) {
+	account := crypt.Stretch([]byte("0123456789abcdef0123456789abcdef"))
+	itemKey, err := crypt.NewItemKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := func(s string) string {
+		out, err := itemKey.Encrypt([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	wrapped, err := account.WrapItemKey(itemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sync := &vw.Sync{
+		Profile: vw.Profile{ID: "user-1"},
+		Ciphers: []vw.Cipher{{ID: "c1", Raw: map[string]any{
+			"type": float64(1), "name": enc("mail/163"), "key": wrapped,
+			"login": map[string]any{
+				"username": enc("u@163.com"), "password": enc("pw"),
+				"uris": []any{map[string]any{"uri": enc("https://mail.163.com/")}},
+			},
+		}}},
+	}
+	v, err := New(sync, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := v.Find("mail/163")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Password != "pw" || it.Username != "u@163.com" || len(it.URIs) != 1 || it.URIs[0] != "https://mail.163.com/" {
+		t.Fatalf("unexpected item %+v", it)
+	}
+}

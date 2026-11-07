@@ -555,13 +555,22 @@ func cmdSet(args []string) int {
 }
 
 func buildNewItem(a *app, name, kind string, username optString, uris []string, password, notes, totpSecret, folderID string) (map[string]any, error) {
-	encName, err := a.cl.Key.Encrypt([]byte(name))
+	itemKey, err := crypt.NewItemKey()
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := a.cl.Key.WrapItemKey(itemKey)
+	if err != nil {
+		return nil, err
+	}
+	encName, err := itemKey.Encrypt([]byte(name))
 	if err != nil {
 		return nil, err
 	}
 	body := map[string]any{
 		"type":           itemType(kind),
 		"name":           encName,
+		"key":            wrapped,
 		"favorite":       false,
 		"reprompt":       0,
 		"organizationId": nil,
@@ -571,7 +580,7 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 		body["folderId"] = folderID
 	}
 	if notes != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(notes))
+		enc, err := itemKey.Encrypt([]byte(notes))
 		if err != nil {
 			return nil, err
 		}
@@ -587,27 +596,27 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 		"password": nil,
 		"totp":     nil,
 	}
-	encURIs, err := uriList(a.cl.Key, uris)
+	encURIs, err := uriList(itemKey, uris)
 	if err != nil {
 		return nil, err
 	}
 	login["uris"] = encURIs
 	if username.set && username.val != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(username.val))
+		enc, err := itemKey.Encrypt([]byte(username.val))
 		if err != nil {
 			return nil, err
 		}
 		login["username"] = enc
 	}
 	if password != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(password))
+		enc, err := itemKey.Encrypt([]byte(password))
 		if err != nil {
 			return nil, err
 		}
 		login["password"] = enc
 	}
 	if totpSecret != "" {
-		enc, err := a.cl.Key.Encrypt([]byte(totpSecret))
+		enc, err := itemKey.Encrypt([]byte(totpSecret))
 		if err != nil {
 			return nil, err
 		}
@@ -622,7 +631,11 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 	if err != nil {
 		return nil, err
 	}
-	encName, err := a.cl.Key.Encrypt([]byte(name))
+	itemKey, err := itemKeyForUpdate(a.cl.Key, raw)
+	if err != nil {
+		return nil, err
+	}
+	encName, err := itemKey.Encrypt([]byte(name))
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +649,7 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		if notes == "" {
 			raw["notes"] = nil
 		} else {
-			enc, err := a.cl.Key.Encrypt([]byte(notes))
+			enc, err := itemKey.Encrypt([]byte(notes))
 			if err != nil {
 				return nil, err
 			}
@@ -656,7 +669,7 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		if username.val == "" {
 			login["username"] = nil
 		} else {
-			enc, err := a.cl.Key.Encrypt([]byte(username.val))
+			enc, err := itemKey.Encrypt([]byte(username.val))
 			if err != nil {
 				return nil, err
 			}
@@ -669,7 +682,7 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		uris = item.URIs
 	}
 	if len(uris) > 0 {
-		encURIs, err := uriList(a.cl.Key, uris)
+		encURIs, err := uriList(itemKey, uris)
 		if err != nil {
 			return nil, err
 		}
@@ -681,7 +694,7 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		if password == "" {
 			login["password"] = nil
 		} else {
-			enc, err := a.cl.Key.Encrypt([]byte(password))
+			enc, err := itemKey.Encrypt([]byte(password))
 			if err != nil {
 				return nil, err
 			}
@@ -692,7 +705,7 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		if totpSecret == "" {
 			login["totp"] = nil
 		} else {
-			enc, err := a.cl.Key.Encrypt([]byte(totpSecret))
+			enc, err := itemKey.Encrypt([]byte(totpSecret))
 			if err != nil {
 				return nil, err
 			}
@@ -700,6 +713,70 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 		}
 	}
 	return raw, nil
+}
+
+// itemKeyForUpdate returns the key that must encrypt a cipher's fields.
+// Items that already carry a wrapped item key keep it; keyless items written
+// by older clients are migrated in place: every EncString is re-encrypted
+// under a fresh item key before the item is written back.
+func itemKeyForUpdate(accountKey *crypt.Key, raw map[string]any) (*crypt.Key, error) {
+	if wrapped, _ := raw["key"].(string); wrapped != "" {
+		return accountKey.UnwrapItemKey(wrapped)
+	}
+	itemKey, err := crypt.NewItemKey()
+	if err != nil {
+		return nil, err
+	}
+	if err := rewrapTree(raw, accountKey, itemKey); err != nil {
+		return nil, err
+	}
+	wrapped, err := accountKey.WrapItemKey(itemKey)
+	if err != nil {
+		return nil, err
+	}
+	raw["key"] = wrapped
+	return itemKey, nil
+}
+
+// rewrapTree re-encrypts every type-2 EncString in a raw item, leaving
+// plaintext values and the wrapped item key itself untouched.
+func rewrapTree(v any, from, to *crypt.Key) error {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, child := range x {
+			if k == "key" {
+				continue
+			}
+			next, err := rewrapAny(child, from, to)
+			if err != nil {
+				return fmt.Errorf("rewrap %q: %w", k, err)
+			}
+			x[k] = next
+		}
+	case []any:
+		for i, child := range x {
+			next, err := rewrapAny(child, from, to)
+			if err != nil {
+				return fmt.Errorf("rewrap [%d]: %w", i, err)
+			}
+			x[i] = next
+		}
+	}
+	return nil
+}
+
+func rewrapAny(v any, from, to *crypt.Key) (any, error) {
+	if s, ok := v.(string); ok && store.IsEncString(s) {
+		plain, err := from.Decrypt(s)
+		if err != nil {
+			return nil, err
+		}
+		return to.Encrypt(plain)
+	}
+	if err := rewrapTree(v, from, to); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func printItemJSON(id, name, action string) {
@@ -941,7 +1018,11 @@ func cmdMove(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	enc, err := a.cl.Key.Encrypt([]byte(newName))
+	itemKey, err := itemKeyForUpdate(a.cl.Key, raw)
+	if err != nil {
+		return a.fail(err)
+	}
+	enc, err := itemKey.Encrypt([]byte(newName))
 	if err != nil {
 		return a.fail(err)
 	}
