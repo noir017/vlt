@@ -289,6 +289,45 @@ func matchCustomFields(fields []CustomField, q string) bool {
 	return false
 }
 
+// FolderInfo represents a decrypted folder with its item count.
+type FolderInfo struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"item_count"`
+}
+
+// ListFolders returns all decrypted folders sorted by name with their active item counts.
+func (v *Vault) ListFolders() []FolderInfo {
+	counts := make(map[string]int)
+	for _, it := range v.Items {
+		if !it.Deleted && it.FolderID != "" {
+			counts[it.FolderID]++
+		}
+	}
+	out := make([]FolderInfo, 0, len(v.folderNames))
+	for id, name := range v.folderNames {
+		out = append(out, FolderInfo{
+			ID:    id,
+			Name:  name,
+			Count: counts[id],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// FolderByName returns the folder matching name (exact match).
+func (v *Vault) FolderByName(name string) (FolderInfo, bool) {
+	for _, f := range v.ListFolders() {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return FolderInfo{}, false
+}
+
 // FolderID resolves a folder name, creating it when missing.
 func (v *Vault) FolderID(name string) (string, bool) {
 	for id, n := range v.folderNames {

@@ -29,7 +29,7 @@ func TestUpdateKeepsExistingItemKey(t *testing.T) {
 	}
 	itemKey := bodyKey(t, a, body)
 	item := &store.Item{ID: "c1", Raw: body}
-	upd, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new", "", "", false, true, false, "", nil)
+	upd, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new", "", "", false, true, false, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestUpdateMigratesLegacyItem(t *testing.T) {
 		"type": float64(1), "name": mustEnc(t, a, "svc/old"),
 		"login": map[string]any{"username": mustEnc(t, a, "root")},
 	}}
-	upd, err := buildUpdate(a, item, "svc/old", "login", optString{}, nil, "", "", "", false, false, false, "", nil)
+	upd, err := buildUpdate(a, item, "svc/old", "login", optString{}, nil, "", "", "", false, false, false, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

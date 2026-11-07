@@ -96,10 +96,10 @@ func usage(w io.Writer) {
                  [--field name=value]... [--field-hidden name=value]...
                  [--password-stdin | --password-file F | --generate [--length N]]
                  [--note-stdin | --note-file F] [--type login|note] [--folder F]
-  vlt ls [query] [--folder F] [--json]
+  vlt ls [query] [--folder F] [--folders|-F] [--json]
   vlt find <query> [--json]
-  vlt mv <name> <new> [--folder F] [--json]
-  vlt rm <name>... [--yes]     (always moves to the trash)
+  vlt mv <name> [<new>] [--folder F] [--id <id>] [--json]
+  vlt rm <name>... [--folder F] [--yes]     (always moves to the trash)
   vlt restore <name>... | --id <id>
   vlt trash [--json]
   vlt run --env KEY=<name>.<field> [--env ...] -- <command> [args...]
@@ -539,18 +539,23 @@ func cmdSet(args []string) int {
 		return usageError(errors.New("new login item needs --password-stdin, --password-file or --generate"))
 	}
 
-	folderName := "agent"
-	if folder.set {
-		folderName = folder.val
-	}
 	folderID := ""
-	if existing != nil && !folder.set {
+	if folder.set {
+		if folder.val != "" {
+			folderID, err = ensureFolder(context.Background(), a, folder.val)
+			if err != nil {
+				return a.fail(err)
+			}
+		}
+	} else if existing != nil {
 		folderID = existing.FolderID
-	}
-	if folderID == "" {
-		folderID, err = ensureFolder(context.Background(), a, folderName)
-		if err != nil {
-			return a.fail(err)
+	} else {
+		inferred := inferFolder(name)
+		if inferred != "" {
+			folderID, err = ensureFolder(context.Background(), a, inferred)
+			if err != nil {
+				return a.fail(err)
+			}
 		}
 	}
 
@@ -572,7 +577,7 @@ func cmdSet(args []string) int {
 	}
 
 	body, err := buildUpdate(a, existing, name, kind, username, uris, password, notes, totpSecret,
-		totpStdin || totpFile != "", passwordSet, notesSet, folderID, parsedFields)
+		totpStdin || totpFile != "", passwordSet, notesSet, folderID, folder.set, parsedFields)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -662,7 +667,7 @@ func buildNewItem(a *app, name, kind string, username optString, uris []string, 
 	return body, nil
 }
 
-func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet, passwordSet, notesSet bool, folderID string, fields []customFieldArg) (map[string]any, error) {
+func buildUpdate(a *app, item *store.Item, name, kind string, username optString, uris []string, password, notes, totpSecret string, totpSet, passwordSet, notesSet bool, folderID string, folderSet bool, fields []customFieldArg) (map[string]any, error) {
 	raw, err := store.CloneRaw(item.Raw)
 	if err != nil {
 		return nil, err
@@ -678,8 +683,12 @@ func buildUpdate(a *app, item *store.Item, name, kind string, username optString
 	raw["name"] = encName
 	raw["type"] = itemType(kind)
 	raw["encryptedFor"] = a.vault.UID
-	if folderID != "" {
-		raw["folderId"] = folderID
+	if folderSet {
+		if folderID != "" {
+			raw["folderId"] = folderID
+		} else {
+			raw["folderId"] = nil
+		}
 	}
 	if notesSet {
 		if notes == "" {
@@ -850,7 +859,17 @@ func uriList(key *crypt.Key, uris []string) ([]map[string]any, error) {
 	return out, nil
 }
 
+func inferFolder(name string) string {
+	if idx := strings.Index(name, "/"); idx > 0 {
+		return name[:idx]
+	}
+	return ""
+}
+
 func ensureFolder(ctx context.Context, a *app, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
 	if id, missing := a.vault.FolderID(name); !missing {
 		return id, nil
 	}
@@ -868,6 +887,8 @@ func listImpl(args []string, requireQuery bool) int {
 	cfgPath := configFlag(fs)
 	asJSON := fs.Bool("json", false, "JSON output")
 	folder := fs.String("folder", "", "only items in this folder")
+	folders := fs.Bool("folders", false, "list folders instead of items")
+	fs.BoolVar(folders, "F", false, "list folders instead of items")
 	trash := fs.Bool("trash", false, "list the trash instead")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -881,6 +902,33 @@ func listImpl(args []string, requireQuery bool) int {
 	a, err := openApp(context.Background(), *cfgPath)
 	if err != nil {
 		return failPlain(err)
+	}
+
+	if *folders {
+		folderList := a.vault.ListFolders()
+		if query != "" {
+			var filtered []store.FolderInfo
+			q := strings.ToLower(query)
+			for _, f := range folderList {
+				if strings.Contains(strings.ToLower(f.Name), q) {
+					filtered = append(filtered, f)
+				}
+			}
+			folderList = filtered
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(folderList)
+			return exitOK
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "FOLDER\tITEMS")
+		for _, f := range folderList {
+			fmt.Fprintf(w, "%s\t%d\n", f.Name, f.Count)
+		}
+		_ = w.Flush()
+		return exitOK
 	}
 	var items []*store.Item
 	if *trash {
@@ -944,19 +992,29 @@ func cmdRemove(args []string) int {
 	cfgPath := configFlag(fs)
 	yes := fs.Bool("yes", false, "do not ask")
 	id := fs.String("id", "", "delete by id instead of name")
+	folder := fs.String("folder", "", "delete an empty folder")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return usageError(err)
 	}
-	if *id != "" && len(pos) != 0 {
-		return usageError(errors.New("use either names or --id, not both"))
-	}
-	if *id == "" && len(pos) == 0 {
-		return usageError(errors.New("rm needs at least one item name, or --id"))
-	}
-	for _, name := range pos {
-		if strings.TrimSpace(name) == "" {
-			return usageError(errors.New("empty item name"))
+	if *folder != "" {
+		if *id != "" || len(pos) != 0 {
+			return usageError(errors.New("cannot mix --folder with item names or --id"))
+		}
+		if strings.TrimSpace(*folder) == "" {
+			return usageError(errors.New("folder name must not be empty"))
+		}
+	} else {
+		if *id != "" && len(pos) != 0 {
+			return usageError(errors.New("use either names or --id, not both"))
+		}
+		if *id == "" && len(pos) == 0 {
+			return usageError(errors.New("rm needs at least one item name, --id, or --folder"))
+		}
+		for _, name := range pos {
+			if strings.TrimSpace(name) == "" {
+				return usageError(errors.New("empty item name"))
+			}
 		}
 	}
 
@@ -964,6 +1022,32 @@ func cmdRemove(args []string) int {
 	if err != nil {
 		return failPlain(err)
 	}
+
+	if *folder != "" {
+		f, ok := a.vault.FolderByName(*folder)
+		if !ok {
+			return a.fail(fmt.Errorf("folder %q not found", *folder))
+		}
+		if f.Count > 0 {
+			plural := "s"
+			if f.Count == 1 {
+				plural = ""
+			}
+			return usageError(fmt.Errorf("folder %q is not empty (contains %d item%s); move or remove items first",
+				f.Name, f.Count, plural))
+		}
+		if !*yes {
+			if !isTTY(os.Stdin) || !confirmed("delete empty folder %q?", f.Name) {
+				return usageError(errors.New("refusing to delete folder without --yes"))
+			}
+		}
+		if err := a.cl.DeleteFolder(context.Background(), f.ID); err != nil {
+			return a.fail(err)
+		}
+		fmt.Printf("removed folder %s\n", f.Name)
+		return exitOK
+	}
+
 	var targets []*store.Item
 	if *id != "" {
 		item, err := a.lookupForDelete(*id, "")
@@ -1020,17 +1104,29 @@ func cmdMove(args []string) int {
 	if err != nil {
 		return usageError(err)
 	}
-	if *id == "" && len(pos) != 2 {
-		return usageError(errors.New("mv needs <old> <new>, or --id <id> <new>"))
+	var oldName, newName string
+	if *id == "" {
+		if len(pos) == 2 {
+			oldName = pos[0]
+			newName = pos[1]
+		} else if len(pos) == 1 && folder.set {
+			oldName = pos[0]
+		} else {
+			return usageError(errors.New("mv requires either a new name or --folder\n  e.g.: vlt mv api/old api/new\n        vlt mv api/foo --folder api"))
+		}
+		if strings.TrimSpace(oldName) == "" {
+			return usageError(errors.New("empty item name"))
+		}
+	} else {
+		if len(pos) == 1 {
+			newName = pos[0]
+		} else if len(pos) == 0 && folder.set {
+			// newName will be filled from item.Name
+		} else {
+			return usageError(errors.New("mv --id requires a new name or --folder"))
+		}
 	}
-	if *id != "" && len(pos) != 1 {
-		return usageError(errors.New("mv --id needs exactly one new name"))
-	}
-	if *id == "" && strings.TrimSpace(pos[0]) == "" {
-		return usageError(errors.New("empty item name"))
-	}
-	newName := pos[len(pos)-1]
-	if strings.TrimSpace(newName) == "" {
+	if newName != "" && strings.TrimSpace(newName) == "" {
 		return usageError(errors.New("new name must not be empty"))
 	}
 
@@ -1042,10 +1138,13 @@ func cmdMove(args []string) int {
 	if *id != "" {
 		item, err = a.vault.FindByID(*id)
 	} else {
-		item, err = a.vault.Find(pos[0])
+		item, err = a.vault.Find(oldName)
 	}
 	if err != nil {
 		return a.fail(err)
+	}
+	if newName == "" {
+		newName = item.Name
 	}
 	if item.Name != newName {
 		if other, err := a.vault.Find(newName); err == nil && other.ID != item.ID {
@@ -1068,19 +1167,41 @@ func cmdMove(args []string) int {
 	raw["name"] = enc
 	raw["encryptedFor"] = a.vault.UID
 	if folder.set {
-		fid, err := ensureFolder(context.Background(), a, folder.val)
-		if err != nil {
-			return a.fail(err)
+		if folder.val == "" {
+			raw["folderId"] = nil
+		} else {
+			fid, err := ensureFolder(context.Background(), a, folder.val)
+			if err != nil {
+				return a.fail(err)
+			}
+			raw["folderId"] = fid
 		}
-		raw["folderId"] = fid
 	}
 	if _, err := a.cl.UpdateCipher(context.Background(), item.ID, raw); err != nil {
 		return a.fail(err)
 	}
 	if *asJSON {
-		printItemJSON(item.ID, newName, "renamed")
+		action := "renamed"
+		if item.Name == newName && folder.set {
+			action = "moved"
+		}
+		printItemJSON(item.ID, newName, action)
 	} else {
-		fmt.Printf("renamed %s -> %s\n", item.Name, newName)
+		if item.Name == newName && folder.set {
+			if folder.val == "" {
+				fmt.Printf("moved %s -> (no folder)\n", item.Name)
+			} else {
+				fmt.Printf("moved %s -> folder %s\n", item.Name, folder.val)
+			}
+		} else if folder.set {
+			if folder.val == "" {
+				fmt.Printf("renamed %s -> %s (no folder)\n", item.Name, newName)
+			} else {
+				fmt.Printf("renamed %s -> %s (folder %s)\n", item.Name, newName, folder.val)
+			}
+		} else {
+			fmt.Printf("renamed %s -> %s\n", item.Name, newName)
+		}
 	}
 	return exitOK
 }

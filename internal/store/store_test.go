@@ -264,3 +264,24 @@ func TestDecryptAndSearchCustomFields(t *testing.T) {
 		t.Fatalf("search by custom field value = %d", got)
 	}
 }
+
+func TestFolders(t *testing.T) {
+	v := testVault(t)
+	folders := v.ListFolders()
+	if len(folders) != 1 {
+		t.Fatalf("expected 1 folder, got %d", len(folders))
+	}
+	if folders[0].Name != "agent" || folders[0].Count != 1 {
+		t.Fatalf("unexpected folder info: %+v", folders[0])
+	}
+
+	f, ok := v.FolderByName("agent")
+	if !ok || f.Count != 1 {
+		t.Fatalf("FolderByName(agent) = (%+v, %v), want count 1, ok true", f, ok)
+	}
+
+	_, ok = v.FolderByName("nonexistent")
+	if ok {
+		t.Fatal("FolderByName(nonexistent) returned ok = true")
+	}
+}

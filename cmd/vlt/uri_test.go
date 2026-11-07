@@ -71,7 +71,7 @@ func TestUpdateReencryptsLegacyURIs(t *testing.T) {
 		}},
 	}
 	// only the password changes; the plaintext URI must still be re-encrypted
-	body, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new-pw", "", "", false, true, false, "", nil)
+	body, err := buildUpdate(a, item, "svc/x", "login", optString{}, nil, "new-pw", "", "", false, true, false, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -58,6 +58,9 @@ printf '%s' "$NEW" | vlt set svc/gitea --password-stdin   # upsert, keeps other 
 vlt set svc/gitea --field pin=1234 --field-hidden secret=abc # custom fields
 vlt set svc/gitea --field pin=                            # empty value deletes the field
 vlt mv svc/gitea svc/gitea-old
+vlt mv svc/gitea --folder svc                               # move to folder without renaming
+vlt ls --folders                                            # list all folders with item counts
+vlt rm --folder retired --yes                               # remove an empty folder
 vlt rm svc/gitea-old svc/retired --yes                    # several at once, to the trash
 vlt rm --id 5f0c... --yes
 
@@ -76,7 +79,7 @@ vlt lock
 ```
 
 `vlt set` is an upsert: an existing name is updated, a missing one is created.
-Items live in folder `agent` unless `--folder` says otherwise.
+New items automatically infer their folder from the name prefix (`api/foo` -> folder `api`), or no folder if without prefix, unless `--folder` says otherwise.
 
 Long values (recovery codes, private keys) go in notes:
 

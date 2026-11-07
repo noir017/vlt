@@ -128,6 +128,11 @@ func (c *Client) CreateFolder(ctx context.Context, encName string) (string, erro
 	return out.ID, nil
 }
 
+// DeleteFolder permanently removes a folder by id.
+func (c *Client) DeleteFolder(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/folders/"+id, nil, nil, true)
+}
+
 // ProfileInfo reads the account profile (used by doctor and by cached-token runs).
 func (c *Client) ProfileInfo(ctx context.Context) (*Profile, error) {
 	var out Profile

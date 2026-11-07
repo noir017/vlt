@@ -119,7 +119,7 @@ func TestUpdateCustomFields(t *testing.T) {
 		{Type: 0, Name: "to_delete", Value: ""},          // delete
 		{Type: 0, Name: "alias_2", Value: "two@139.com"}, // add
 	}
-	upd, err := buildUpdate(a, it, "mail/139", "login", optString{}, nil, "", "", "", false, false, false, "", updateFields)
+	upd, err := buildUpdate(a, it, "mail/139", "login", optString{}, nil, "", "", "", false, false, false, "", false, updateFields)
 	if err != nil {
 		t.Fatal(err)
 	}
